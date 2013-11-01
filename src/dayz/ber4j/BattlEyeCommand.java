@@ -6,13 +6,13 @@ public enum BattlEyeCommand {
     Lock("#lock"),
     Unlock("#unlock");
 
-    private final String command;
+    private final String commandString;
 
-    BattlEyeCommand(String command) {
-        this.command = command;
+    BattlEyeCommand(String commandString) {
+        this.commandString = commandString;
     }
 
-    public String getCommand() {
-        return command;
+    public String getCommandString() {
+        return commandString;
     }
 }
