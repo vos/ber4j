@@ -12,6 +12,7 @@ import java.nio.channels.ClosedByInterruptException;
 import java.nio.channels.DatagramChannel;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.zip.CRC32;
 
@@ -28,11 +29,11 @@ public class BattlEyeClient {
     private final List<MessageHandler> messageHandlerList;
 
     private final InetSocketAddress host;
-    private final DatagramChannel datagramChannel;
-    private final ByteBuffer sendBuffer;
-    private final ByteBuffer receiveBuffer;
+    private DatagramChannel datagramChannel;
+    private ByteBuffer sendBuffer;
+    private ByteBuffer receiveBuffer;
 
-    private boolean connected;
+    private AtomicBoolean connected;
     private boolean autoReconnect = true;
 
     private String password;
@@ -45,16 +46,7 @@ public class BattlEyeClient {
 
     public BattlEyeClient(InetSocketAddress host) throws IOException {
         this.host = host;
-
-        datagramChannel = DatagramChannel.open();
-        datagramChannel.configureBlocking(true); // remove?
-        datagramChannel.bind(new InetSocketAddress(host.getPort()));
-
-        sendBuffer = ByteBuffer.allocate(datagramChannel.getOption(StandardSocketOptions.SO_SNDBUF));
-        sendBuffer.order(ByteOrder.LITTLE_ENDIAN); // ArmA 2 server uses little endian
-
-        receiveBuffer = ByteBuffer.allocate(datagramChannel.getOption(StandardSocketOptions.SO_RCVBUF));
-        receiveBuffer.order(sendBuffer.order());
+        connected = new AtomicBoolean(false);
 
         connectionHandlerList = new ArrayList<>();
         commandResponseHandlerList = new ArrayList<>();
@@ -67,6 +59,16 @@ public class BattlEyeClient {
             return false;
         }
         this.password = password;
+
+        datagramChannel = DatagramChannel.open();
+//        datagramChannel.configureBlocking(true); // remove?
+        datagramChannel.bind(new InetSocketAddress(host.getPort()));
+
+        sendBuffer = ByteBuffer.allocate(datagramChannel.getOption(StandardSocketOptions.SO_SNDBUF));
+        sendBuffer.order(ByteOrder.LITTLE_ENDIAN); // ArmA 2 server uses little endian
+
+        receiveBuffer = ByteBuffer.allocate(datagramChannel.getOption(StandardSocketOptions.SO_RCVBUF));
+        receiveBuffer.order(sendBuffer.order());
 
         sequenceNumber = -1;
         long time = System.currentTimeMillis();
@@ -82,8 +84,9 @@ public class BattlEyeClient {
         if (!readPacket() || receiveBuffer.remaining() != 2) {
             throw new IOException("unexpected data received");
         }
-        connected = receiveBuffer.get() == 0x00 && receiveBuffer.get() == 0x01;
-        if (connected) {
+        boolean success = receiveBuffer.get() == 0x00 && receiveBuffer.get() == 0x01;
+        connected.set(success);
+        if (success) {
             log.debug("connected to {}", host);
             startReceivingData();
             startMonitorThread();
@@ -98,7 +101,7 @@ public class BattlEyeClient {
                 connectionHandler.onConnectionFailed();
             }
         }
-        return connected;
+        return success;
     }
 
     public boolean reconnect() throws IOException {
@@ -106,7 +109,7 @@ public class BattlEyeClient {
     }
 
     public boolean isConnected() {
-        return datagramChannel.isConnected() && connected;
+        return datagramChannel != null && datagramChannel.isConnected() && connected.get();
     }
 
     public void disconnect() throws IOException {
@@ -117,20 +120,28 @@ public class BattlEyeClient {
 
     private void doDisconnect(DisconnectType disconnectType) throws IOException {
         log.trace("disconnect from {}", host);
-        datagramChannel.disconnect();
-//        datagramChannel.close();
-//        sendBuffer.clear();
-//        receiveBuffer.clear();
-        connected = false;
-        receiveDataThread.interrupt();
-        receiveDataThread = null;
-        monitorThread.interrupt();
-        monitorThread = null;
+        connected.set(false);
+        if (monitorThread != null) {
+            monitorThread.interrupt();
+            monitorThread = null;
+        }
+        if (receiveDataThread != null) {
+            receiveDataThread.interrupt();
+            receiveDataThread = null;
+        }
+        if (datagramChannel != null) {
+            datagramChannel.disconnect();
+            datagramChannel.close();
+        }
+        datagramChannel = null;
+        sendBuffer = null;
+        receiveBuffer = null;
         // fire ConnectionHandler.onDisconnected
         for (ConnectionHandler connectionHandler : connectionHandlerList) {
             connectionHandler.onDisconnected(disconnectType);
         }
         if (disconnectType == DisconnectType.ConnectionLost && autoReconnect) {
+            // wait before reconnect?
             reconnect();
         }
     }
@@ -302,7 +313,7 @@ public class BattlEyeClient {
                     }
                 } catch (IOException e) {
                     if (e instanceof ClosedByInterruptException) {
-                        log.trace("receive data thread interrupted", e);
+                        log.trace("receive data thread interrupted");
                     } else {
                         log.error("unhandled exception while receiving data", e);
                     }
@@ -337,7 +348,7 @@ public class BattlEyeClient {
                         }
                     }
                 } catch (InterruptedException e) {
-                    log.trace("monitor thread interrupted", e);
+                    log.trace("monitor thread interrupted");
                 } catch (IOException e) {
                     log.error("unhandled exception in monitor thread", e);
                 }
