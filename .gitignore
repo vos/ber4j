@@ -1,5 +1,9 @@
 *.class
 
+# IntelliJ Files
+.idea/workspace.xml
+out/
+
 # Package Files #
 *.jar
 *.war
