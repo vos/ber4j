@@ -365,6 +365,9 @@ public class BattlEyeClient {
     private boolean readPacket() throws IOException {
         receiveBuffer.clear();
         int read = datagramChannel.read(receiveBuffer);
+        if (read < 7) {
+            return false; // invalid header size
+        }
 //        System.out.println(read + " bytes read");
         receiveBuffer.flip();
         if (receiveBuffer.get() != (byte) 'B' || receiveBuffer.get() != (byte) 'E') {
