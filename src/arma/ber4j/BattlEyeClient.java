@@ -19,8 +19,9 @@ import java.util.zip.CRC32;
 public class BattlEyeClient {
     private static final Logger log = LoggerFactory.getLogger(BattlEyeClient.class);
 
-    private static final int KEEP_ALIVE_DELAY = 30_000;
-    private static final int TIMEOUT_DELAY = 5_000;
+    private static final int KEEP_ALIVE_DELAY = 30000;
+    private static final int TIMEOUT_DELAY = 5000;
+    private static final int RECONNECT_DELAY = 2000;
 
     private final CRC32 CRC = new CRC32(); // don't share with other clients
 
@@ -141,8 +142,20 @@ public class BattlEyeClient {
             connectionHandler.onDisconnected(disconnectType);
         }
         if (disconnectType == DisconnectType.ConnectionLost && autoReconnect) {
-            // wait before reconnect?
-            reconnect();
+            // wait before reconnect
+            new Thread() {
+                @Override
+                public void run() {
+                    try {
+                        Thread.sleep(RECONNECT_DELAY);
+                        reconnect();
+                    } catch (InterruptedException e) {
+                        log.error("auto reconnect thread interrupted");
+                    } catch (IOException e) {
+                        log.error("error while trying to reconnect", e);
+                    }
+                }
+            }.start();
         }
     }
 
