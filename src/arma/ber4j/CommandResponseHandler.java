@@ -1,4 +1,4 @@
-package dayz.ber4j;
+package arma.ber4j;
 
 public interface CommandResponseHandler {
     void onCommandResponseReceived(String commandResponse);

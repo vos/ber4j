@@ -1,4 +1,4 @@
-package dayz.ber4j;
+package arma.ber4j;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
