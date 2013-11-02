@@ -8,6 +8,7 @@ import java.net.InetSocketAddress;
 import java.net.StandardSocketOptions;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.channels.ClosedByInterruptException;
 import java.nio.channels.DatagramChannel;
 import java.util.ArrayList;
 import java.util.List;
@@ -28,8 +29,8 @@ public class BattlEyeClient {
 
     private final InetSocketAddress host;
     private final DatagramChannel datagramChannel;
-    private ByteBuffer sendBuffer;
-    private ByteBuffer receiveBuffer;
+    private final ByteBuffer sendBuffer;
+    private final ByteBuffer receiveBuffer;
 
     private boolean connected;
     private boolean autoReconnect = true;
@@ -118,13 +119,13 @@ public class BattlEyeClient {
         log.trace("disconnect from {}", host);
         datagramChannel.disconnect();
 //        datagramChannel.close();
-        sendBuffer = null;
-        receiveBuffer = null;
+//        sendBuffer.clear();
+//        receiveBuffer.clear();
+        connected = false;
         receiveDataThread.interrupt();
         receiveDataThread = null;
         monitorThread.interrupt();
         monitorThread = null;
-        connected = false;
         // fire ConnectionHandler.onDisconnected
         for (ConnectionHandler connectionHandler : connectionHandlerList) {
             connectionHandler.onDisconnected(disconnectType);
@@ -232,14 +233,14 @@ public class BattlEyeClient {
                 String[] multiPacketCache = null; // use separate cache for every sequence number? possible overlap?
                 int multiPacketCounter = 0;
                 try {
-                    while (isConnected()) {
+                    while (isConnected() && !isInterrupted()) {
                         if (!readPacket() || receiveBuffer.remaining() < 2) {
                             log.warn("invalid data received");
                             continue;
                         }
                         if (this != receiveDataThread) {
                             log.debug("instance thread changed (receive data thread)");
-                            return; // terminate this thread
+                            break; // exit this thread
                         }
                         byte packetType = receiveBuffer.get();
                         switch (packetType) {
@@ -300,8 +301,13 @@ public class BattlEyeClient {
                         }
                     }
                 } catch (IOException e) {
-                    log.error("unhandled exception while receiving data", e);
+                    if (e instanceof ClosedByInterruptException) {
+                        log.trace("receive data thread interrupted", e);
+                    } else {
+                        log.error("unhandled exception while receiving data", e);
+                    }
                 }
+                log.trace("exit receive data thread");
             }
         };
         receiveDataThread.start();
@@ -311,17 +317,17 @@ public class BattlEyeClient {
         monitorThread = new Thread("ber4j monitor thread") {
             @Override
             public void run() {
-                while (isConnected()) {
-                    try {
+                try {
+                    while (isConnected() && !isInterrupted()) {
                         Thread.sleep(1000);
                         if (this != monitorThread) {
                             log.debug("instance thread changed (monitor thread)");
-                            return; // terminate this thread
+                            break; // exit this thread
                         }
                         if (lastSent.get() - lastReceived.get() > TIMEOUT_DELAY) {
                             log.debug("connection to server lost");
                             doDisconnect(DisconnectType.ConnectionLost);
-                            return; // terminate this thread
+                            break; // exit this thread
                         }
                         if (System.currentTimeMillis() - lastSent.get() > KEEP_ALIVE_DELAY) {
                             // send empty command packet to keep the connection alive
@@ -329,12 +335,13 @@ public class BattlEyeClient {
                             createPacket(BattlEyePacketType.Command, getNextSequenceNumber(), null);
                             sendPacket();
                         }
-                    } catch (IOException e) {
-                        log.error("unhandled exception in monitor thread", e);
-                    } catch (InterruptedException e) {
-                        return; // terminate this thread
                     }
+                } catch (InterruptedException e) {
+                    log.trace("monitor thread interrupted", e);
+                } catch (IOException e) {
+                    log.error("unhandled exception in monitor thread", e);
                 }
+                log.trace("exit monitor thread");
             }
         };
         monitorThread.start();
