@@ -1,5 +1,8 @@
 package arma.ber4j;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.StandardSocketOptions;
@@ -12,6 +15,8 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.zip.CRC32;
 
 public class BattlEyeClient {
+    private static final Logger log = LoggerFactory.getLogger(BattlEyeClient.class);
+
     private static final int KEEP_ALIVE_DELAY = 30_000;
     private static final int TIMEOUT_DELAY = 5_000;
 
@@ -56,6 +61,7 @@ public class BattlEyeClient {
     }
 
     public boolean connect(String password) throws IOException {
+        log.trace("connect to {}", host);
         if (isConnected()) {
             return false;
         }
@@ -77,6 +83,7 @@ public class BattlEyeClient {
         }
         connected = receiveBuffer.get() == 0x00 && receiveBuffer.get() == 0x01;
         if (connected) {
+            log.debug("connected to {}", host);
             startReceivingData();
             startMonitorThread();
             // fire ConnectionHandler.onConnected()
@@ -84,6 +91,7 @@ public class BattlEyeClient {
                 connectionHandler.onConnected();
             }
         } else {
+            log.debug("connection failed to {}", host);
             // fire ConnectionHandler.onConnectionFailed()
             for (ConnectionHandler connectionHandler : connectionHandlerList) {
                 connectionHandler.onConnectionFailed();
@@ -107,19 +115,20 @@ public class BattlEyeClient {
     }
 
     private void doDisconnect(DisconnectType disconnectType) throws IOException {
+        log.trace("disconnect from {}", host);
         datagramChannel.disconnect();
 //        datagramChannel.close();
         sendBuffer = null;
         receiveBuffer = null;
+        receiveDataThread.interrupt();
+        receiveDataThread = null;
+        monitorThread.interrupt();
+        monitorThread = null;
         connected = false;
         // fire ConnectionHandler.onDisconnected
         for (ConnectionHandler connectionHandler : connectionHandlerList) {
             connectionHandler.onDisconnected(disconnectType);
         }
-        receiveDataThread.interrupt();
-        receiveDataThread = null;
-        monitorThread.interrupt();
-        monitorThread = null;
         if (disconnectType == DisconnectType.ConnectionLost && autoReconnect) {
             reconnect();
         }
@@ -134,6 +143,7 @@ public class BattlEyeClient {
     }
 
     public int sendCommand(String command) throws IOException {
+        log.debug("sendCommand: {}", command);
         if (!isConnected()) {
             return -1;
         }
@@ -224,11 +234,11 @@ public class BattlEyeClient {
                 try {
                     while (isConnected()) {
                         if (!readPacket() || receiveBuffer.remaining() < 2) {
-                            // TODO log invalid data received
+                            log.warn("invalid data received");
                             continue;
                         }
                         if (this != receiveDataThread) {
-                            // instance thread changed
+                            log.debug("instance thread changed (receive data thread)");
                             return; // terminate this thread
                         }
                         byte packetType = receiveBuffer.get();
@@ -240,6 +250,7 @@ public class BattlEyeClient {
                                 if (receiveBuffer.hasRemaining()) {
                                     if (receiveBuffer.get() == 0x00) {
                                         // multi packet response
+                                        log.trace("multi packet command response received: {}", sn);
                                         // 0x00 | number of packets for this response | 0-based index of the current packet
                                         byte packetCount = receiveBuffer.get();
                                         byte packetIndex = receiveBuffer.get();
@@ -261,18 +272,21 @@ public class BattlEyeClient {
                                         }
                                     } else {
                                         // single packet response
+                                        log.trace("single packet command response received: {}", sn);
                                         // position -1 and remaining +1 because the call to receiveBuffer.get() increments the position!
                                         String commandResponse = new String(receiveBuffer.array(), receiveBuffer.position() - 1, receiveBuffer.remaining() + 1);
                                         fireCommandResponseHandler(commandResponse, sn);
                                     }
+                                } else {
+                                    log.trace("empty command response received: {}", sn);
                                 }
-                                // else: empty command response
                                 break;
                             }
                             case 0x02: {
                                 // server message
                                 // 0x02 | 1-byte sequence number (starting at 0) | server message (ASCII string without null-terminator)
                                 byte sn = receiveBuffer.get();
+                                log.trace("server message received: {}", sn);
                                 String message = new String(receiveBuffer.array(), receiveBuffer.position(), receiveBuffer.remaining());
                                 createPacket(BattlEyePacketType.Acknowledge, sn, null);
                                 sendPacket();
@@ -281,12 +295,12 @@ public class BattlEyeClient {
                             }
                             default:
                                 // should not happen!
+                                log.warn("invalid packet type received: {}", packetType);
                                 break;
                         }
                     }
                 } catch (IOException e) {
-                    // TODO handle exception
-                    e.printStackTrace();
+                    log.error("unhandled exception while receiving data", e);
                 }
             }
         };
@@ -301,21 +315,22 @@ public class BattlEyeClient {
                     try {
                         Thread.sleep(1000);
                         if (this != monitorThread) {
-                            // instance thread changed
+                            log.debug("instance thread changed (monitor thread)");
                             return; // terminate this thread
                         }
                         if (lastSent.get() - lastReceived.get() > TIMEOUT_DELAY) {
+                            log.debug("connection to server lost");
                             doDisconnect(DisconnectType.ConnectionLost);
                             return; // terminate this thread
                         }
                         if (System.currentTimeMillis() - lastSent.get() > KEEP_ALIVE_DELAY) {
-                            // send empty command package to keep the connection alive
+                            // send empty command packet to keep the connection alive
+                            log.trace("send empty command packet");
                             createPacket(BattlEyePacketType.Command, getNextSequenceNumber(), null);
                             sendPacket();
                         }
                     } catch (IOException e) {
-                        // TODO log error
-                        e.printStackTrace();
+                        log.error("unhandled exception in monitor thread", e);
                     } catch (InterruptedException e) {
                         return; // terminate this thread
                     }
@@ -358,24 +373,27 @@ public class BattlEyeClient {
 
     private void sendPacket() throws IOException {
         int write = datagramChannel.write(sendBuffer);
-//        System.out.println(write + " bytes written");
+        log.trace("{} bytes written to the channel", write);
         lastSent.set(System.currentTimeMillis());
     }
 
     private boolean readPacket() throws IOException {
         receiveBuffer.clear();
         int read = datagramChannel.read(receiveBuffer);
+        log.trace("{} bytes read from the channel", read);
         if (read < 7) {
-            return false; // invalid header size
+            log.warn("invalid header size");
+            return false;
         }
-//        System.out.println(read + " bytes read");
         receiveBuffer.flip();
         if (receiveBuffer.get() != (byte) 'B' || receiveBuffer.get() != (byte) 'E') {
-            return false; // invalid header
+            log.warn("invalid header");
+            return false;
         }
         int checksum = receiveBuffer.getInt();
         if (receiveBuffer.get() != (byte) 0xFF) {
-            return false; // invalid header
+            log.warn("invalid header");
+            return false;
         }
         // TODO validate received packet
         lastReceived.set(System.currentTimeMillis());
