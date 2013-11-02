@@ -12,27 +12,36 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.zip.CRC32;
 
 public class BattlEyeClient {
-    private static final CRC32 CRC = new CRC32();
+    private static final int KEEP_ALIVE_DELAY = 30_000;
+    private static final int TIMEOUT_DELAY = 5_000;
 
-    private final InetSocketAddress host;
-    private DatagramChannel datagramChannel;
-    private ByteBuffer sendBuffer;
-    private ByteBuffer receiveBuffer;
-    private boolean connected;
-
-    int sequenceNumber;
-    private AtomicLong lastSent;
-    private AtomicLong lastReceived;
+    private final CRC32 CRC = new CRC32(); // don't share with other clients
 
     private final List<ConnectionHandler> connectionHandlerList;
     private final List<CommandResponseHandler> commandResponseHandlerList;
     private final List<MessageHandler> messageHandlerList;
 
+    private final InetSocketAddress host;
+    private final DatagramChannel datagramChannel;
+    private ByteBuffer sendBuffer;
+    private ByteBuffer receiveBuffer;
+
+    private boolean connected;
+    private boolean autoReconnect = true;
+
+    private String password;
+    int sequenceNumber;
+    private AtomicLong lastSent;
+    private AtomicLong lastReceived;
+
+    private Thread receiveDataThread;
+    private Thread monitorThread;
+
     public BattlEyeClient(InetSocketAddress host) throws IOException {
         this.host = host;
 
         datagramChannel = DatagramChannel.open();
-        datagramChannel.configureBlocking(true);
+        datagramChannel.configureBlocking(true); // remove?
         datagramChannel.bind(new InetSocketAddress(host.getPort()));
 
         sendBuffer = ByteBuffer.allocate(datagramChannel.getOption(StandardSocketOptions.SO_SNDBUF));
@@ -47,6 +56,11 @@ public class BattlEyeClient {
     }
 
     public boolean connect(String password) throws IOException {
+        if (isConnected()) {
+            return false;
+        }
+        this.password = password;
+
         sequenceNumber = -1;
         long time = System.currentTimeMillis();
         lastSent = new AtomicLong(time);
@@ -63,11 +77,12 @@ public class BattlEyeClient {
         if (connected) {
             startReceivingData();
             startMonitorThread();
-            // fire connection handler
+            // fire ConnectionHandler.onConnected()
             for (ConnectionHandler connectionHandler : connectionHandlerList) {
                 connectionHandler.onConnected();
             }
         } else {
+            // fire ConnectionHandler.onConnectionFailed()
             for (ConnectionHandler connectionHandler : connectionHandlerList) {
                 connectionHandler.onConnectionFailed();
             }
@@ -75,23 +90,45 @@ public class BattlEyeClient {
         return connected;
     }
 
+    public boolean reconnect() throws IOException {
+        return connect(password);
+    }
+
     public boolean isConnected() {
         return datagramChannel.isConnected() && connected;
     }
 
     public void disconnect() throws IOException {
+        if (isConnected()) {
+            doDisconnect(DisconnectType.Manual);
+        }
+    }
+
+    private void doDisconnect(DisconnectType disconnectType) throws IOException {
         datagramChannel.disconnect();
-        datagramChannel.close();
-        datagramChannel = null;
-        sendBuffer.clear();
+//        datagramChannel.close();
         sendBuffer = null;
-        receiveBuffer.clear();
         receiveBuffer = null;
         connected = false;
-        // fire connection handler
+        // fire ConnectionHandler.onDisconnected
         for (ConnectionHandler connectionHandler : connectionHandlerList) {
-            connectionHandler.onDisconnected();
+            connectionHandler.onDisconnected(disconnectType);
         }
+        receiveDataThread.interrupt();
+        receiveDataThread = null;
+        monitorThread.interrupt();
+        monitorThread = null;
+        if (disconnectType == DisconnectType.ConnectionLost && autoReconnect) {
+            reconnect();
+        }
+    }
+
+    public boolean isAutoReconnect() {
+        return autoReconnect;
+    }
+
+    public void setAutoReconnect(boolean autoReconnect) {
+        this.autoReconnect = autoReconnect;
     }
 
     public boolean sendCommand(String command) throws IOException {
@@ -178,14 +215,18 @@ public class BattlEyeClient {
     }
 
     private void startReceivingData() {
-        new Thread("ber4j receive data thread") {
+        receiveDataThread = new Thread("ber4j receive data thread") {
             @Override
             public void run() {
-                String[] multiPacketCache = null;
+                String[] multiPacketCache = null; // use separate cache for every sequence number? possible overlap?
                 int multiPacketCounter = 0;
                 try {
                     while (isConnected()) {
                         readPacket();
+                        if (this != receiveDataThread) {
+                            // instance thread changed
+                            return; // terminate this thread
+                        }
                         byte packetType = receiveBuffer.get();
                         switch (packetType) {
                             case 0x01: {
@@ -235,7 +276,7 @@ public class BattlEyeClient {
                                 break;
                             }
                             default:
-                                // TODO should not happen!
+                                // should not happen!
                                 break;
                         }
                     }
@@ -244,31 +285,40 @@ public class BattlEyeClient {
                     e.printStackTrace();
                 }
             }
-        }.start();
+        };
+        receiveDataThread.start();
     }
 
-    // send empty command packet every 15 seconds to keep connection alive
-    // TODO handle connection lost
     private void startMonitorThread() {
-        new Thread("ber4j monitor thread") {
+        monitorThread = new Thread("ber4j monitor thread") {
             @Override
             public void run() {
-                final int waitTime = 15000;
                 while (isConnected()) {
                     try {
-                        Thread.sleep(waitTime);
-                        if (System.currentTimeMillis() - lastSent.get() > waitTime) {
-                            System.out.println("send empty command package");
+                        Thread.sleep(1000);
+                        if (this != monitorThread) {
+                            // instance thread changed
+                            return; // terminate this thread
+                        }
+                        if (lastSent.get() - lastReceived.get() > TIMEOUT_DELAY) {
+                            doDisconnect(DisconnectType.ConnectionLost);
+                            return; // terminate this thread
+                        }
+                        if (System.currentTimeMillis() - lastSent.get() > KEEP_ALIVE_DELAY) {
+                            // send empty command package to keep the connection alive
                             createPacket(BattlEyePacketType.Command, getNextSequenceNumber(), null);
                             sendPacket();
                         }
-                    } catch (InterruptedException | IOException e) {
+                    } catch (IOException e) {
                         // TODO log error
                         e.printStackTrace();
+                    } catch (InterruptedException e) {
+                        return; // terminate this thread
                     }
                 }
             }
-        }.start();
+        };
+        monitorThread.start();
     }
 
     private int getNextSequenceNumber() {

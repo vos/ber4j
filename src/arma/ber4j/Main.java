@@ -31,13 +31,8 @@ public class Main {
             }
 
             @Override
-            public void onDisconnected() {
-                System.out.println("onDisconnected");
-            }
-
-            @Override
-            public void onConnectionLost() {
-                System.out.println("onConnectionLost");
+            public void onDisconnected(DisconnectType disconnectType) {
+                System.out.println("onDisconnected: " + disconnectType);
             }
         });
 
