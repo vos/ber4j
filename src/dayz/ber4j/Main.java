@@ -5,22 +5,57 @@ import java.net.InetSocketAddress;
 public class Main {
 
     public static void main(String[] args) throws Exception {
-        BattlEyeClient client = new BattlEyeClient(new InetSocketAddress("127.0.0.1", 2302));
-        boolean success = client.connect("changeme");
-        System.out.println("login successful = " + success);
+        final BattlEyeClient client = new BattlEyeClient(new InetSocketAddress("127.0.0.1", 2302));
 
-        client.addMessageHandler(new MessageReceivedHandler() {
+        client.addConnectionHandler(new ConnectionHandler() {
             @Override
-            public void onMessageReceived(String message, int id) {
-                System.out.println("message received: " + message);
+            public void onConnected() {
+                System.out.println("onConnected");
+                try {
+                    Thread.sleep(2000);
+                    client.sendCommand(BattlEyeCommand.Say, "-1", "Here I am!");
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+                try {
+                    Thread.sleep(5000);
+                    client.sendCommand(BattlEyeCommand.Bans);
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            }
+
+            @Override
+            public void onConnectionFailed() {
+                System.out.println("onConnectionFailed");
+            }
+
+            @Override
+            public void onDisconnected() {
+                System.out.println("onDisconnected");
+            }
+
+            @Override
+            public void onConnectionLost() {
+                System.out.println("onConnectionLost");
             }
         });
 
-        Thread.sleep(2000);
-        client.sendCommand(BattlEyeCommand.Lock);
+        client.addCommandResponseHandler(new CommandResponseHandler() {
+            @Override
+            public void onCommandResponseReceived(String commandResponse) {
+                System.out.println("onCommandResponseReceived: " + commandResponse);
+            }
+        });
 
-        Thread.sleep(5000);
-        client.sendCommand(BattlEyeCommand.Players);
+        client.addMessageHandler(new MessageHandler() {
+            @Override
+            public void onMessageReceived(String message) {
+                System.out.println("onMessageReceived: " + message);
+            }
+        });
+
+        client.connect("changeme");
 
 //        client.disconnect();
     }

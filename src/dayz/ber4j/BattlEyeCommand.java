@@ -4,7 +4,10 @@ public enum BattlEyeCommand {
 
     Players("players"),
     Lock("#lock"),
-    Unlock("#unlock");
+    Unlock("#unlock"),
+    Say("say"),
+    Bans("bans");
+    // TODO add all commands
 
     private final String commandString;
 
