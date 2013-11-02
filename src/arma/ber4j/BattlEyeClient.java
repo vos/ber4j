@@ -71,8 +71,10 @@ public class BattlEyeClient {
         createPacket(BattlEyePacketType.Login, -1, password);
         sendPacket();
 
-        readPacket();
         // 0x00 | (0x01 (successfully logged in) OR 0x00 (failed))
+        if (!readPacket() || receiveBuffer.remaining() != 2) {
+            throw new IOException("unexpected data received");
+        }
         connected = receiveBuffer.get() == 0x00 && receiveBuffer.get() == 0x01;
         if (connected) {
             startReceivingData();
@@ -131,16 +133,17 @@ public class BattlEyeClient {
         this.autoReconnect = autoReconnect;
     }
 
-    public boolean sendCommand(String command) throws IOException {
+    public int sendCommand(String command) throws IOException {
         if (!isConnected()) {
-            return false;
+            return -1;
         }
-        createPacket(BattlEyePacketType.Command, getNextSequenceNumber(), command);
+        int id = getNextSequenceNumber();
+        createPacket(BattlEyePacketType.Command, id, command);
         sendPacket();
-        return true;
+        return id;
     }
 
-    public boolean sendCommand(BattlEyeCommand command, String... params) throws IOException {
+    public int sendCommand(BattlEyeCommand command, String... params) throws IOException {
         String commandString = command.getCommandString();
         for (String param : params) {
             commandString += ' ' + param;
@@ -196,12 +199,10 @@ public class BattlEyeClient {
         messageHandlerList.clear();
     }
 
-    private void fireCommandResponseHandler(String commandResponse) {
-        if (commandResponse == null || commandResponseHandlerList.isEmpty()) {
-            return;
-        }
+    private void fireCommandResponseHandler(String commandResponse, int id) {
+        // also send empty command response
         for (CommandResponseHandler commandResponseHandler : commandResponseHandlerList) {
-            commandResponseHandler.onCommandResponseReceived(commandResponse);
+            commandResponseHandler.onCommandResponseReceived(commandResponse, id);
         }
     }
 
@@ -222,7 +223,10 @@ public class BattlEyeClient {
                 int multiPacketCounter = 0;
                 try {
                     while (isConnected()) {
-                        readPacket();
+                        if (!readPacket() || receiveBuffer.remaining() < 2) {
+                            // TODO log invalid data received
+                            continue;
+                        }
                         if (this != receiveDataThread) {
                             // instance thread changed
                             return; // terminate this thread
@@ -253,13 +257,13 @@ public class BattlEyeClient {
                                             }
                                             multiPacketCache = null;
                                             multiPacketCounter = 0;
-                                            fireCommandResponseHandler(sb.toString());
+                                            fireCommandResponseHandler(sb.toString(), sn);
                                         }
                                     } else {
                                         // single packet response
                                         // position -1 and remaining +1 because the call to receiveBuffer.get() increments the position!
-                                        String message = new String(receiveBuffer.array(), receiveBuffer.position() - 1, receiveBuffer.remaining() + 1);
-                                        fireCommandResponseHandler(message);
+                                        String commandResponse = new String(receiveBuffer.array(), receiveBuffer.position() - 1, receiveBuffer.remaining() + 1);
+                                        fireCommandResponseHandler(commandResponse, sn);
                                     }
                                 }
                                 // else: empty command response
@@ -329,8 +333,8 @@ public class BattlEyeClient {
     // 'B'(0x42) | 'E'(0x45) | 4-byte CRC32 checksum of the subsequent bytes | 0xFF
     private void createPacket(BattlEyePacketType type, int sequenceNumber, String command) {
         sendBuffer.clear();
-        sendBuffer.put((byte) 0x42); // B
-        sendBuffer.put((byte) 0x45); // E
+        sendBuffer.put((byte) 'B');
+        sendBuffer.put((byte) 'E');
         sendBuffer.position(6); // skip checksum
         sendBuffer.put((byte) 0xFF);
         sendBuffer.put(type.getType());
@@ -358,13 +362,20 @@ public class BattlEyeClient {
         lastSent.set(System.currentTimeMillis());
     }
 
-    private void readPacket() throws IOException {
+    private boolean readPacket() throws IOException {
         receiveBuffer.clear();
         int read = datagramChannel.read(receiveBuffer);
 //        System.out.println(read + " bytes read");
         receiveBuffer.flip();
+        if (receiveBuffer.get() != (byte) 'B' || receiveBuffer.get() != (byte) 'E') {
+            return false; // invalid header
+        }
+        int checksum = receiveBuffer.getInt();
+        if (receiveBuffer.get() != (byte) 0xFF) {
+            return false; // invalid header
+        }
         // TODO validate received packet
-        receiveBuffer.position(7); // skip header
         lastReceived.set(System.currentTimeMillis());
+        return true;
     }
 }

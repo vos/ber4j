@@ -19,7 +19,7 @@ public class Main {
                 }
                 try {
                     Thread.sleep(5000);
-                    client.sendCommand(BattlEyeCommand.Bans);
+                    client.sendCommand(BattlEyeCommand.Players);
                 } catch (Exception e) {
                     e.printStackTrace();
                 }
@@ -38,8 +38,8 @@ public class Main {
 
         client.addCommandResponseHandler(new CommandResponseHandler() {
             @Override
-            public void onCommandResponseReceived(String commandResponse) {
-                System.out.println("onCommandResponseReceived: " + commandResponse);
+            public void onCommandResponseReceived(String commandResponse, int id) {
+                System.out.println("onCommandResponseReceived[" + id + "]: " + commandResponse);
             }
         });
 
