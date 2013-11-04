@@ -1,5 +1,6 @@
 package arma.ber4j;
 
+import java.io.IOException;
 import java.net.InetSocketAddress;
 
 public class Main {
@@ -11,23 +12,12 @@ public class Main {
             @Override
             public void onConnected() {
                 System.out.println("onConnected");
-                try {
-                    Thread.sleep(2000);
-                    client.sendCommand(BattlEyeCommand.Say, "-1", "Here I am!");
-                } catch (Exception e) {
-                    e.printStackTrace();
-                }
-                try {
-                    Thread.sleep(5000);
-                    client.sendCommand(BattlEyeCommand.Players);
-                } catch (Exception e) {
-                    e.printStackTrace();
-                }
-            }
-
-            @Override
-            public void onConnectionFailed() {
-                System.out.println("onConnectionFailed");
+//                try {
+//                    client.sendCommand(BattlEyeCommand.Say, "-1", "test test test");
+//                    client.sendCommand(BattlEyeCommand.Players);
+//                } catch (IOException e) {
+//                    e.printStackTrace();
+//                }
             }
 
             @Override
@@ -52,6 +42,9 @@ public class Main {
 
         client.connect("changeme");
 
+//        Thread.sleep(15_000);
 //        client.disconnect();
+//        Thread.sleep(5000);
+//        client.reconnect();
     }
 }
