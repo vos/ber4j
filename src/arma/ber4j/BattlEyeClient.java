@@ -19,8 +19,9 @@ import java.util.zip.CRC32;
 public class BattlEyeClient {
     private static final Logger log = LoggerFactory.getLogger(BattlEyeClient.class);
 
-    private static final int KEEP_ALIVE_DELAY = 30000;
+    private static final int MONITOR_INTERVAL = 1000;
     private static final int TIMEOUT_DELAY = 5000;
+    private static final int KEEP_ALIVE_DELAY = 30000;
     private static final int RECONNECT_DELAY = 2000;
 
     private final CRC32 CRC = new CRC32(); // don't share with other clients
@@ -55,7 +56,7 @@ public class BattlEyeClient {
     }
 
     public boolean connect(String password) throws IOException {
-        log.trace("connect to {}", host);
+        log.trace("connecting to {}", host);
         if (isConnected()) {
             return false;
         }
@@ -78,31 +79,13 @@ public class BattlEyeClient {
 
         datagramChannel.connect(host);
 
+        startReceivingData();
+        startMonitorThread();
+
         createPacket(BattlEyePacketType.Login, -1, password);
         sendPacket();
 
-        // 0x00 | (0x01 (successfully logged in) OR 0x00 (failed))
-        if (!readPacket() || receiveBuffer.remaining() != 2) {
-            throw new IOException("unexpected data received");
-        }
-        boolean success = receiveBuffer.get() == 0x00 && receiveBuffer.get() == 0x01;
-        connected.set(success);
-        if (success) {
-            log.debug("connected to {}", host);
-            startReceivingData();
-            startMonitorThread();
-            // fire ConnectionHandler.onConnected()
-            for (ConnectionHandler connectionHandler : connectionHandlerList) {
-                connectionHandler.onConnected();
-            }
-        } else {
-            log.debug("connection failed to {}", host);
-            // fire ConnectionHandler.onConnectionFailed()
-            for (ConnectionHandler connectionHandler : connectionHandlerList) {
-                connectionHandler.onConnectionFailed();
-            }
-        }
-        return success;
+        return true;
     }
 
     public boolean reconnect() throws IOException {
@@ -120,7 +103,7 @@ public class BattlEyeClient {
     }
 
     private void doDisconnect(DisconnectType disconnectType) throws IOException {
-        log.trace("disconnect from {}", host);
+        log.trace("disconnecting from {}", host);
         connected.set(false);
         if (monitorThread != null) {
             monitorThread.interrupt();
@@ -133,8 +116,8 @@ public class BattlEyeClient {
         if (datagramChannel != null) {
             datagramChannel.disconnect();
             datagramChannel.close();
+            datagramChannel = null;
         }
-        datagramChannel = null;
         sendBuffer = null;
         receiveBuffer = null;
         // fire ConnectionHandler.onDisconnected
@@ -150,7 +133,7 @@ public class BattlEyeClient {
                         Thread.sleep(RECONNECT_DELAY);
                         reconnect();
                     } catch (InterruptedException e) {
-                        log.error("auto reconnect thread interrupted");
+                        log.warn("auto reconnect thread interrupted");
                     } catch (IOException e) {
                         log.error("error while trying to reconnect", e);
                     }
@@ -254,20 +237,45 @@ public class BattlEyeClient {
         receiveDataThread = new Thread("ber4j receive data thread") {
             @Override
             public void run() {
+                log.trace("start receive data thread");
                 String[] multiPacketCache = null; // use separate cache for every sequence number? possible overlap?
                 int multiPacketCounter = 0;
                 try {
-                    while (isConnected() && !isInterrupted()) {
+                    while (!isInterrupted()) {
                         if (!readPacket() || receiveBuffer.remaining() < 2) {
                             log.warn("invalid data received");
                             continue;
                         }
                         if (this != receiveDataThread) {
                             log.debug("instance thread changed (receive data thread)");
-                            break; // exit this thread
+                            break; // exit thread
                         }
                         byte packetType = receiveBuffer.get();
                         switch (packetType) {
+                            case 0x00: {
+                                // login response
+                                // 0x00 | (0x01 (successfully logged in) OR 0x00 (failed))
+                                if (receiveBuffer.remaining() != 1) {
+                                    log.error("unexpected login response received");
+                                    return; // exit thread
+                                }
+                                connected.set(receiveBuffer.get() == 0x01);
+                                if (connected.get()) {
+                                    log.debug("connected to {}", host);
+                                    // fire ConnectionHandler.onConnected()
+                                    for (ConnectionHandler connectionHandler : connectionHandlerList) {
+                                        connectionHandler.onConnected();
+                                    }
+                                } else {
+                                    log.debug("connection failed to {}", host);
+                                    // fire ConnectionHandler.onConnectionFailed()
+                                    for (ConnectionHandler connectionHandler : connectionHandlerList) {
+                                        connectionHandler.onConnectionFailed();
+                                    }
+                                    return; // exit thread
+                                }
+                                break;
+                            }
                             case 0x01: {
                                 // command response
                                 // 0x01 | received 1-byte sequence number | (possible header and/or response (ASCII string without null-terminator) OR nothing)
@@ -341,17 +349,18 @@ public class BattlEyeClient {
         monitorThread = new Thread("ber4j monitor thread") {
             @Override
             public void run() {
+                log.trace("start monitor thread");
                 try {
-                    while (isConnected() && !isInterrupted()) {
-                        Thread.sleep(1000);
+                    while (!isInterrupted()) {
+                        Thread.sleep(MONITOR_INTERVAL);
                         if (this != monitorThread) {
                             log.debug("instance thread changed (monitor thread)");
-                            break; // exit this thread
+                            break; // exit thread
                         }
                         if (lastSent.get() - lastReceived.get() > TIMEOUT_DELAY) {
                             log.debug("connection to server lost");
                             doDisconnect(DisconnectType.ConnectionLost);
-                            break; // exit this thread
+                            break; // exit thread
                         }
                         if (System.currentTimeMillis() - lastSent.get() > KEEP_ALIVE_DELAY) {
                             // send empty command packet to keep the connection alive
