@@ -257,6 +257,7 @@ public class BattlEyeClient {
                                 // 0x00 | (0x01 (successfully logged in) OR 0x00 (failed))
                                 if (receiveBuffer.remaining() != 1) {
                                     log.error("unexpected login response received");
+                                    doDisconnect(DisconnectType.ConnectionFailed);
                                     return; // exit thread
                                 }
                                 connected.set(receiveBuffer.get() == 0x01);
@@ -268,10 +269,7 @@ public class BattlEyeClient {
                                     }
                                 } else {
                                     log.debug("connection failed to {}", host);
-                                    // fire ConnectionHandler.onConnectionFailed()
-                                    for (ConnectionHandler connectionHandler : connectionHandlerList) {
-                                        connectionHandler.onConnectionFailed();
-                                    }
+                                    doDisconnect(DisconnectType.ConnectionFailed);
                                     return; // exit thread
                                 }
                                 break;
