@@ -12,6 +12,8 @@ import java.nio.channels.ClosedByInterruptException;
 import java.nio.channels.DatagramChannel;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Queue;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.zip.CRC32;
@@ -25,10 +27,6 @@ public class BattlEyeClient {
     private static final int RECONNECT_DELAY = 2000;
 
     private final CRC32 CRC = new CRC32(); // don't share with other clients
-
-    private final List<ConnectionHandler> connectionHandlerList;
-    private final List<CommandResponseHandler> commandResponseHandlerList;
-    private final List<MessageHandler> messageHandlerList;
 
     private final InetSocketAddress host;
     private DatagramChannel datagramChannel;
@@ -46,9 +44,19 @@ public class BattlEyeClient {
     private Thread receiveDataThread;
     private Thread monitorThread;
 
+    private final Queue<Command> commandQueue;
+    private boolean emptyCommandQueueOnConnect;
+
+    private final List<ConnectionHandler> connectionHandlerList;
+    private final List<CommandResponseHandler> commandResponseHandlerList;
+    private final List<MessageHandler> messageHandlerList;
+
     public BattlEyeClient(InetSocketAddress host) throws IOException {
         this.host = host;
         connected = new AtomicBoolean(false);
+
+        commandQueue = new ConcurrentLinkedQueue<>();
+        emptyCommandQueueOnConnect = true;
 
         connectionHandlerList = new ArrayList<>();
         commandResponseHandlerList = new ArrayList<>();
@@ -76,6 +84,10 @@ public class BattlEyeClient {
         long time = System.currentTimeMillis();
         lastSent = new AtomicLong(time);
         lastReceived = new AtomicLong(time);
+
+        if (emptyCommandQueueOnConnect) {
+            commandQueue.clear();
+        }
 
         datagramChannel.connect(host);
 
@@ -155,10 +167,22 @@ public class BattlEyeClient {
         if (!isConnected()) {
             return -1;
         }
-        int id = getNextSequenceNumber();
-        createPacket(BattlEyePacketType.Command, id, command);
-        sendPacket();
-        return id;
+        Command cmd = new Command(command);
+        if (commandQueue.offer(cmd)) {
+            cmd.id = getNextSequenceNumber();
+        } else {
+            log.debug("command queue is full");
+            return -2;
+        }
+        if (commandQueue.size() == 1) {
+            // enqueue and send this command immediately
+            createPacket(BattlEyePacketType.Command, cmd.id, command);
+            sendPacket();
+        } else {
+            // only enqueue this command
+            log.trace("command enqueued: {}", cmd);
+        }
+        return cmd.id;
     }
 
     public int sendCommand(BattlEyeCommand command, String... params) throws IOException {
@@ -167,6 +191,31 @@ public class BattlEyeClient {
             commandString += ' ' + param;
         }
         return sendCommand(commandString);
+    }
+
+    private void sendNextCommand(int id) throws IOException {
+        Command command = commandQueue.poll();
+        if (command == null) {
+            log.error("command queue empty");
+            return;
+        }
+        if (command.id != id) {
+            log.warn("invalid command id");
+        }
+        if (!commandQueue.isEmpty()) {
+            command = commandQueue.peek();
+            log.trace("send enqueued command: {}", command);
+            createPacket(BattlEyePacketType.Command, command.id, command.command);
+            sendPacket();
+        }
+    }
+
+    public boolean isEmptyCommandQueueOnConnect() {
+        return emptyCommandQueueOnConnect;
+    }
+
+    public void setEmptyCommandQueueOnConnect(boolean b) {
+        emptyCommandQueueOnConnect = b;
     }
 
     public List<ConnectionHandler> getAllConnectionHandlers() {
@@ -300,6 +349,7 @@ public class BattlEyeClient {
                                             multiPacketCache = null;
                                             multiPacketCounter = 0;
                                             fireCommandResponseHandler(sb.toString(), sn);
+                                            sendNextCommand(sn);
                                         }
                                     } else {
                                         // single packet response
@@ -307,6 +357,7 @@ public class BattlEyeClient {
                                         // position -1 and remaining +1 because the call to receiveBuffer.get() increments the position!
                                         String commandResponse = new String(receiveBuffer.array(), receiveBuffer.position() - 1, receiveBuffer.remaining() + 1);
                                         fireCommandResponseHandler(commandResponse, sn);
+                                        sendNextCommand(sn);
                                     }
                                 } else {
                                     log.trace("empty command response received: {}", sn);
@@ -436,5 +487,22 @@ public class BattlEyeClient {
         // TODO validate received packet
         lastReceived.set(System.currentTimeMillis());
         return true;
+    }
+
+    private static class Command {
+        public final String command;
+        public int id = -1;
+
+        public Command(String command) {
+            this.command = command;
+        }
+
+        @Override
+        public String toString() {
+            return "Command{" +
+                    "command='" + command + '\'' +
+                    ", id=" + id +
+                    '}';
+        }
     }
 }
