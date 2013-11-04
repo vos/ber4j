@@ -186,11 +186,12 @@ public class BattlEyeClient {
     }
 
     public int sendCommand(BattlEyeCommand command, String... params) throws IOException {
-        String commandString = command.getCommandString();
+        StringBuilder commandBuilder = new StringBuilder(command.getCommandString());
         for (String param : params) {
-            commandString += ' ' + param;
+            commandBuilder.append(' ');
+            commandBuilder.append(param);
         }
-        return sendCommand(commandString);
+        return sendCommand(commandBuilder.toString());
     }
 
     private void sendNextCommand(int id) throws IOException {
