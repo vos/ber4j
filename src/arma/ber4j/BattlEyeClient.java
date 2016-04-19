@@ -72,7 +72,7 @@ public class BattlEyeClient {
 
         datagramChannel = DatagramChannel.open();
 //        datagramChannel.configureBlocking(true); // remove?
-        datagramChannel.bind(new InetSocketAddress(host.getPort()));
+        datagramChannel.bind(new InetSocketAddress(0));
 
         sendBuffer = ByteBuffer.allocate(datagramChannel.getOption(StandardSocketOptions.SO_SNDBUF));
         sendBuffer.order(ByteOrder.LITTLE_ENDIAN); // ArmA 2 server uses little endian
